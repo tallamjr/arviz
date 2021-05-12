@@ -40,6 +40,23 @@ def non_centered_eight():
     return non_centered_eight
 
 
+@pytest.fixture(scope="module")
+def multivariable_log_likelihood(centered_eight):
+    centered_eight = centered_eight.copy()
+    centered_eight.add_groups({"log_likelihood": centered_eight.sample_stats.log_likelihood})
+    centered_eight.log_likelihood = centered_eight.log_likelihood.rename_vars(
+        {"log_likelihood": "obs"}
+    )
+    new_arr = DataArray(
+        np.zeros(centered_eight.log_likelihood["obs"].values.shape),
+        dims=["chain", "draw", "school"],
+        coords=centered_eight.log_likelihood.coords,
+    )
+    centered_eight.log_likelihood["decoy"] = new_arr
+    delattr(centered_eight, "sample_stats")
+    return centered_eight
+
+
 def test_hdp():
     normal_sample = np.random.randn(5000000)
     interval = hdi(normal_sample)
@@ -151,7 +168,7 @@ def test_compare_same(centered_eight, multidim_models, method, multidim):
 
 def test_compare_unknown_ic_and_method(centered_eight, non_centered_eight):
     model_dict = {"centered": centered_eight, "non_centered": non_centered_eight}
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError):
         compare(model_dict, ic="Unknown", method="stacking")
     with pytest.raises(ValueError):
         compare(model_dict, ic="loo", method="Unknown")
@@ -190,6 +207,20 @@ def test_compare_different_size(centered_eight, non_centered_eight):
     model_dict = {"centered": centered_eight, "non_centered": non_centered_eight}
     with pytest.raises(ValueError):
         compare(model_dict, ic="waic", method="stacking")
+
+
+@pytest.mark.parametrize("ic", ["loo", "waic"])
+def test_compare_multiple_obs(multivariable_log_likelihood, centered_eight, non_centered_eight, ic):
+    compare_dict = {
+        "centered_eight": centered_eight,
+        "non_centered_eight": non_centered_eight,
+        "problematic": multivariable_log_likelihood,
+    }
+    with pytest.raises(TypeError, match="several log likelihood arrays"):
+        get_log_likelihood(compare_dict["problematic"])
+    with pytest.raises(TypeError, match=f"{ic}.*model problematic"):
+        compare(compare_dict, ic=ic)
+    assert compare(compare_dict, ic=ic, var_name="obs") is not None
 
 
 def test_summary_ndarray():
@@ -455,7 +486,7 @@ def test_loo_print(centered_eight, scale):
 def test_psislw(centered_eight):
     pareto_k = loo(centered_eight, pointwise=True, reff=0.7)["pareto_k"]
     log_likelihood = get_log_likelihood(centered_eight)
-    log_likelihood = log_likelihood.stack(sample=("chain", "draw"))
+    log_likelihood = log_likelihood.stack(__sample__=("chain", "draw"))
     assert_allclose(pareto_k, psislw(-log_likelihood, 0.7)[1])
 
 
@@ -513,9 +544,9 @@ def test_loo_pit(centered_eight, args):
     y_hat = args.get("y_hat", None)
     log_weights = args.get("log_weights", None)
     y_arr = centered_eight.observed_data.obs
-    y_hat_arr = centered_eight.posterior_predictive.obs.stack(sample=("chain", "draw"))
-    log_like = get_log_likelihood(centered_eight).stack(sample=("chain", "draw"))
-    n_samples = len(log_like.sample)
+    y_hat_arr = centered_eight.posterior_predictive.obs.stack(__sample__=("chain", "draw"))
+    log_like = get_log_likelihood(centered_eight).stack(__sample__=("chain", "draw"))
+    n_samples = len(log_like.__sample__)
     ess_p = ess(centered_eight.posterior, method="mean")
     reff = np.hstack([ess_p[v].values.flatten() for v in ess_p.data_vars]).mean() / n_samples
     log_weights_arr = psislw(-log_like, reff=reff)[0]
@@ -553,9 +584,9 @@ def test_loo_pit_multidim(multidim_models, args):
     log_weights = args.get("log_weights", None)
     idata = multidim_models.model_1
     y_arr = idata.observed_data.y
-    y_hat_arr = idata.posterior_predictive.y.stack(sample=("chain", "draw"))
-    log_like = get_log_likelihood(idata).stack(sample=("chain", "draw"))
-    n_samples = len(log_like.sample)
+    y_hat_arr = idata.posterior_predictive.y.stack(__sample__=("chain", "draw"))
+    log_like = get_log_likelihood(idata).stack(__sample__=("chain", "draw"))
+    n_samples = len(log_like.__sample__)
     ess_p = ess(idata.posterior, method="mean")
     reff = np.hstack([ess_p[v].values.flatten() for v in ess_p.data_vars]).mean() / n_samples
     log_weights_arr = psislw(-log_like, reff=reff)[0]

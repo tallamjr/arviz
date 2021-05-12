@@ -18,7 +18,6 @@ def plot_dist(
     rotated=False,
     rug=False,
     bw="default",
-    circular=False,
     quantiles=None,
     contour=True,
     fill_last=True,
@@ -51,8 +50,9 @@ def plot_dist(
     color : string
         valid matplotlib color
     kind : string
-        By default ("auto") continuous variables are plotted using KDEs and discrete ones using
-        histograms. To override this use "hist" to plot histograms and "kde" for KDEs
+        By default ("auto") continuous variables will use the kind defined by rcParam
+        ``plot.density_kind`` and discrete ones will use histograms.
+        To override this use "hist" to plot histograms and "kde" for KDEs
     cumulative : bool
         If true plot the estimated cumulative distribution function. Defaults to False.
         Ignored for 2D KDE
@@ -65,13 +65,10 @@ def plot_dist(
     bw: Optional[float or str]
         If numeric, indicates the bandwidth and must be positive.
         If str, indicates the method to estimate the bandwidth and must be
-        one of "scott", "silverman", "isj" or "experimental" when `circular` is False
-        and "taylor" (for now) when `circular` is True.
+        one of "scott", "silverman", "isj" or "experimental" when `is_circular` is False
+        and "taylor" (for now) when `is_circular` is True.
         Defaults to "default" which means "experimental" when variable is not circular
         and "taylor" when it is.
-    circular: Optional[bool]
-        If True, it interprets the values passed are from a circular variable measured in radians
-        and a circular KDE is used. Only valid for 1D KDE. Defaults to False.
     quantiles : list
         Quantiles in ascending order used to segment the KDE. Use [.25, .5, .75] for quartiles.
         Defaults to None.
@@ -103,7 +100,10 @@ def plot_dist(
         Keywords passed to the histogram.
     is_circular : {False, True, "radians", "degrees"}. Default False.
         Select input type {"radians", "degrees"} for circular histogram or KDE plot. If True,
-        default input type is "radians".
+        default input type is "radians". When this argument is present, it interprets the
+        values passed are from a circular variable measured in radians and a circular KDE is
+        used. Inputs in "degrees" will undergo an internal conversion to radians. Only valid
+        for 1D KDE. Defaults to False.
     ax: axes, optional
         Matplotlib axes or bokeh figures.
     backend: str, optional
@@ -172,7 +172,7 @@ def plot_dist(
         raise TypeError('Invalid "kind":{}. Select from {{"auto","kde","hist"}}'.format(kind))
 
     if kind == "auto":
-        kind = "hist" if values.dtype.kind == "i" else "kde"
+        kind = "hist" if values.dtype.kind == "i" else rcParams["plot.density_kind"]
 
     dist_plot_args = dict(
         # User Facing API that can be simplified
@@ -185,7 +185,6 @@ def plot_dist(
         rotated=rotated,
         rug=rug,
         bw=bw,
-        circular=circular,
         quantiles=quantiles,
         contour=contour,
         fill_last=fill_last,

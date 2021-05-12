@@ -25,7 +25,6 @@ from typing import Dict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import arviz
 
-
 arviz.rcParams["data.load"] = "eager"
 arviz.Numba.disable_numba()
 
@@ -84,7 +83,7 @@ templates_path = ["../_templates"]
 
 # MyST related params
 jupyter_execute_notebooks = "auto"
-execution_excludepatterns = ['*.ipynb']
+execution_excludepatterns = ["*.ipynb"]
 myst_heading_anchors = 3
 panels_add_bootstrap_css = False
 
@@ -106,6 +105,7 @@ if branch_name == "main":
 else:
     # The short X.Y version.
     version = arviz.__version__
+
 # The full version, including alpha/beta/rc tags.
 release = version
 
@@ -142,8 +142,27 @@ html_theme = "pydata_sphinx_theme"
 # documentation.
 
 html_theme_options = {
-    "github_url": "https://github.com/arviz-devs/arviz",
-    "twitter_url": "https://twitter.com/arviz_devs",
+    "icon_links": [
+        {
+            "name": "GitHub",
+            "url": "https://github.com/arviz-devs/arviz",
+            "icon": "fab fa-github-square",
+        },
+        {
+            "name": "Twitter",
+            "url": "https://twitter.com/arviz_devs",
+            "icon": "fab fa-twitter-square",
+        },
+    ],
+    "navbar_start": ["navbar-logo", "navbar-version"],
+    "use_edit_page_button": False,  # TODO: see how to skip of fix for generated pages
+    "google_analytics_id": "G-W1G68W77YV",
+}
+html_context = {
+    "github_user": "arviz-devs",
+    "github_repo": "arviz",
+    "github_version": "main",
+    "doc_path": "doc/source/",
 }
 
 # Add any paths that contain custom static files (such as style sheets) here,
@@ -182,7 +201,7 @@ html_favicon = "_static/favicon.ico"
 
 # -- Options for LaTeX output ---------------------------------------------
 
-latex_elements : Dict[str, str] = {
+latex_elements: Dict[str, str] = {
     # The paper size ('letterpaper' or 'a4paper').
     #
     # 'papersize': 'letterpaper',

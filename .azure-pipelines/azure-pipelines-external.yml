@@ -20,7 +20,7 @@ jobs:
 
       Python_39_Special_versions:
         python.version: 3.9
-        pystan.version: "preview"
+        pystan.version: 2.19.1.1
         cmdstanpy.version: 0.9.67
         pymc3.version: "github"
         emcee.version: 2
@@ -49,12 +49,10 @@ jobs:
       if [ "$(pystan.version)" = "latest" ]; then
           python -m pip --no-cache-dir install pystan
       else
-          if [ "$(pystan.version)" = "preview" ]; then
-              # try to skip other pre-releases than pystan
-              python -m pip --no-cache-dir install httpstan
-              python -m pip --no-cache-dir install --pre pystan
+          if [ "$(pystan.version)" = "latest" ]; then
+              python -m pip --no-cache-dir install pystan
           else
-              python -m pip --no-cache-dir install pystan=="${pystan.version}"
+              python -m pip --no-cache-dir install pystan=="$(pystan.version)"
           fi
       fi
 
@@ -124,6 +122,18 @@ jobs:
   - script: |
       python -m typing_copilot.cli tighten --error-if-can-tighten
     displayName: 'typing_copilot'
+
+  - script: |
+      python -m typing_copilot.cli tighten
+    condition: failed()
+    displayName: 'update mypy.ini with typing_copilot'
+
+  - task: PublishBuildArtifacts@1
+    condition: failed()
+    inputs:
+      pathtoPublish: 'mypy.ini'
+      artifactName: 'mypy.ini'
+    displayName: 'Upload updated mypy.ini'
 
   - script: |
       pytest arviz/tests/helpers.py

@@ -401,9 +401,7 @@ def _get_grid(
         Maximum value of the grid
     """
     # Set up number of bins.
-    if grid_len < 100:
-        grid_len = 100
-    grid_len = int(grid_len)
+    grid_len = max(int(grid_len), 100)
 
     # Set up domain
     if custom_lims is not None:
@@ -524,6 +522,8 @@ def kde(x, circular=False, **kwargs):
     arviz.stats.density_utils.kde: Arviz KDE estimator
     """
     if circular:
+        if circular == "degrees":
+            x = np.radians(x)
         kde_fun = _kde_circular
     else:
         kde_fun = _kde_linear
@@ -664,7 +664,7 @@ def _kde_circular(
     ----------
     x : 1D numpy array
         Data used to calculate the density estimation.
-        Theoritically it is a random sample obtained from $f$,
+        Theoretically it is a random sample obtained from $f$,
         the true probability density function we aim to estimate.
     bw: int, float or str, optional
         If numeric, indicates the bandwidth and must be positive.
@@ -947,8 +947,14 @@ def get_bins(values):
     than the standard deviation. However, the IQR depends on fewer points than the standard
     deviation, so it is less accurate, especially for long tailed distributions.
     """
-    x_min = values.min().astype(int)
-    x_max = values.max().astype(int)
+    dtype = values.dtype.kind
+
+    if dtype == "i":
+        x_min = values.min().astype(int)
+        x_max = values.max().astype(int)
+    else:
+        x_min = values.min().astype(float)
+        x_max = values.max().astype(float)
 
     # Sturges histogram bin estimator
     bins_sturges = (x_max - x_min) / (np.log2(values.size) + 1)
@@ -957,9 +963,16 @@ def get_bins(values):
     iqr = np.subtract(*np.percentile(values, [75, 25]))  # pylint: disable=assignment-from-no-return
     bins_fd = 2 * iqr * values.size ** (-1 / 3)
 
-    width = np.round(np.max([1, bins_sturges, bins_fd])).astype(int)
+    if dtype == "i":
+        width = np.round(np.max([1, bins_sturges, bins_fd])).astype(int)
+        bins = np.arange(x_min, x_max + width + 1, width)
+    else:
+        width = np.max([bins_sturges, bins_fd])
+        if np.isclose(x_min, x_max):
+            width = 1e-3
+        bins = np.arange(x_min, x_max + width, width)
 
-    return np.arange(x_min, x_max + width + 1, width)
+    return bins
 
 
 def _sturges_formula(dataset, mult=1):

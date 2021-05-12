@@ -2,17 +2,24 @@
 """Statistical functions in ArviZ."""
 import warnings
 from copy import deepcopy
-from typing import TYPE_CHECKING, List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Mapping, cast, Callable
 
 import numpy as np
 import pandas as pd
 import scipy.stats as st
 import xarray as xr
 from scipy.optimize import minimize
+from typing_extensions import Literal
+
+NO_GET_ARGS: bool = False
+try:
+    from typing_extensions import get_args
+except ImportError:
+    NO_GET_ARGS = True
 
 from arviz import _log
 from ..data import InferenceData, convert_to_dataset, convert_to_inference_data
-from ..rcparams import rcParams
+from ..rcparams import rcParams, ScaleKeyword, ICKeyword
 from ..utils import Numba, _numba_var, _var_names, get_coords
 from .density_utils import get_bins as _get_bins
 from .density_utils import histogram as _histogram
@@ -26,9 +33,6 @@ from .stats_utils import stats_variance_2d as svar
 from .stats_utils import wrap_xarray_ufunc as _wrap_xarray_ufunc
 from ..sel_utils import xarray_var_iter
 from ..labels import BaseLabeller
-
-if TYPE_CHECKING:
-    from typing_extensions import Literal
 
 
 __all__ = [
@@ -45,7 +49,14 @@ __all__ = [
 
 
 def compare(
-    dataset_dict, ic=None, method="stacking", b_samples=1000, alpha=1, seed=None, scale=None
+    dataset_dict: Mapping[str, InferenceData],
+    ic: Optional[ICKeyword] = None,
+    method: Literal["stacking", "BB-pseudo-BMA", "pseudo-MA"] = "stacking",
+    b_samples: int = 1000,
+    alpha: float = 1,
+    seed=None,
+    scale: Optional[ScaleKeyword] = None,
+    var_name: Optional[str] = None,
 ):
     r"""Compare models based on PSIS-LOO `loo` or WAIC `waic` cross-validation.
 
@@ -58,31 +69,32 @@ def compare(
     ----------
     dataset_dict: dict[str] -> InferenceData
         A dictionary of model names and InferenceData objects
-    ic: str
+    ic: str, optional
         Information Criterion (PSIS-LOO `loo` or WAIC `waic`) used to compare models. Defaults to
         ``rcParams["stats.information_criterion"]``.
-    method: str
+    method: str, optional
         Method used to estimate the weights for each model. Available options are:
 
-        - 'stacking' : (default) stacking of predictive distributions.
+        - 'stacking' : stacking of predictive distributions.
         - 'BB-pseudo-BMA' : pseudo-Bayesian Model averaging using Akaike-type
           weighting. The weights are stabilized using the Bayesian bootstrap.
         - 'pseudo-BMA': pseudo-Bayesian Model averaging using Akaike-type
           weighting, without Bootstrap stabilization (not recommended).
 
         For more information read https://arxiv.org/abs/1704.02030
-    b_samples: int
+    b_samples: int, optional default = 1000
         Number of samples taken by the Bayesian bootstrap estimation.
         Only useful when method = 'BB-pseudo-BMA'.
-    alpha: float
+        Defaults to ``rcParams["stats.ic_compare_method"]``.
+    alpha: float, optional
         The shape parameter in the Dirichlet distribution used for the Bayesian bootstrap. Only
         useful when method = 'BB-pseudo-BMA'. When alpha=1 (default), the distribution is uniform
         on the simplex. A smaller alpha will keeps the final weights more away from 0 and 1.
-    seed: int or np.random.RandomState instance
+    seed: int or np.random.RandomState instance, optional
         If int or RandomState, use it for seeding Bayesian bootstrap. Only
         useful when method = 'BB-pseudo-BMA'. Default None the global
         np.random state is used.
-    scale: str
+    scale: str, optional
         Output scale for IC. Available options are:
 
         - `log` : (default) log-score (after Vehtari et al. (2017))
@@ -91,6 +103,9 @@ def compare(
 
         A higher log-score (or a lower deviance) indicates a model with better predictive
         accuracy.
+    var_name: str, optional
+        If there is more than a single observed variable in the ``InferenceData``, which
+        should be used as the basis for comparison.
 
     Returns
     -------
@@ -141,10 +156,16 @@ def compare(
     --------
     loo : Compute the Pareto Smoothed importance sampling Leave One Out cross-validation.
     waic : Compute the widely applicable information criterion.
-
     """
     names = list(dataset_dict.keys())
-    scale = rcParams["stats.ic_scale"] if scale is None else scale.lower()
+    if scale is not None:
+        scale = cast(ScaleKeyword, scale.lower())
+    else:
+        scale = cast(ScaleKeyword, rcParams["stats.ic_scale"])
+    allowable = ["log", "negative_log", "deviance"] if NO_GET_ARGS else get_args(ScaleKeyword)
+    if scale not in allowable:
+        raise ValueError(f"{scale} is not a valid value for scale: must be in {allowable}")
+
     if scale == "log":
         scale_value = 1
         ascending = False
@@ -155,9 +176,15 @@ def compare(
             scale_value = -2
         ascending = True
 
-    ic = rcParams["stats.information_criterion"] if ic is None else ic.lower()
+    if ic is None:
+        ic = cast(ICKeyword, rcParams["stats.information_criterion"])
+    else:
+        ic = cast(ICKeyword, ic.lower())
+    allowable = ["loo", "waic"] if NO_GET_ARGS else get_args(ICKeyword)
+    if ic not in allowable:
+        raise ValueError(f"{ic} is not a valid value for ic: must be in {allowable}")
     if ic == "loo":
-        ic_func = loo
+        ic_func: Callable = loo
         df_comp = pd.DataFrame(
             index=names,
             columns=[
@@ -171,7 +198,7 @@ def compare(
                 "warning",
                 "loo_scale",
             ],
-            dtype=np.float,
+            dtype=np.float_,
         )
         scale_col = "loo_scale"
     elif ic == "waic":
@@ -189,12 +216,13 @@ def compare(
                 "warning",
                 "waic_scale",
             ],
-            dtype=np.float,
+            dtype=np.float_,
         )
         scale_col = "waic_scale"
     else:
         raise NotImplementedError(f"The information criterion {ic} is not supported.")
 
+    method = rcParams["stats.ic_compare_method"] if method is None else method
     if method.lower() not in ["stacking", "bb-pseudo-bma", "pseudo-bma"]:
         raise ValueError(f"The method {method}, to compute weights, is not supported.")
 
@@ -206,7 +234,12 @@ def compare(
     names = []
     for name, dataset in dataset_dict.items():
         names.append(name)
-        ics = ics.append([ic_func(dataset, pointwise=True, scale=scale)])
+        try:
+            # Here is where the IC function is actually computed -- the rest of this
+            # function is argument processing and return value formatting
+            ics = ics.append([ic_func(dataset, pointwise=True, scale=scale, var_name=var_name)])
+        except Exception as e:
+            raise e.__class__(f"Encountered error trying to compute {ic} from model {name}.") from e
     ics.index = names
     ics.sort_values(by=ic, inplace=True, ascending=ascending)
     ics[ic_i] = ics[ic_i].apply(lambda x: x.values.flatten())
@@ -615,7 +648,7 @@ def loo(data, pointwise=None, var_name=None, reff=None, scale=None):
     log_likelihood = _get_log_likelihood(inference_data, var_name=var_name)
     pointwise = rcParams["stats.ic_pointwise"] if pointwise is None else pointwise
 
-    log_likelihood = log_likelihood.stack(sample=("chain", "draw"))
+    log_likelihood = log_likelihood.stack(__sample__=("chain", "draw"))
     shape = log_likelihood.shape
     n_samples = shape[-1]
     n_data_points = np.product(shape[:-1])
@@ -659,7 +692,7 @@ def loo(data, pointwise=None, var_name=None, reff=None, scale=None):
         warn_mg = True
 
     ufunc_kwargs = {"n_dims": 1, "ravel": False}
-    kwargs = {"input_core_dims": [["sample"]]}
+    kwargs = {"input_core_dims": [["__sample__"]]}
     loo_lppd_i = scale_value * _wrap_xarray_ufunc(
         _logsumexp, log_weights, ufunc_kwargs=ufunc_kwargs, **kwargs
     )
@@ -719,6 +752,14 @@ def psislw(log_weights, reff=1.0):
     """
     Pareto smoothed importance sampling (PSIS).
 
+    Notes
+    -----
+    If the ``log_weights`` input is an :class:`~xarray.DataArray` with a dimension
+    named ``__sample__`` (recommended) ``psislw`` will interpret this dimension as samples,
+    and all other dimensions as dimensions of the observed data, looping over them to
+    calculate the psislw of each observation. If no ``__sample__`` dimension is present or
+    the input is a numpy array, the last dimension will be interpreted as ``__sample__``.
+
     Parameters
     ----------
     log_weights: array
@@ -745,13 +786,17 @@ def psislw(log_weights, reff=1.0):
 
         In [1]: import arviz as az
            ...: data = az.load_arviz_data("centered_eight")
-           ...: log_likelihood = data.sample_stats.log_likelihood.stack(sample=("chain", "draw"))
+           ...: log_likelihood = data.sample_stats.log_likelihood.stack(
+           ...:     __sample__=("chain", "draw")
+           ...: )
            ...: az.psislw(-log_likelihood, reff=0.8)
 
     """
-    if hasattr(log_weights, "sample"):
-        n_samples = len(log_weights.sample)
-        shape = [size for size, dim in zip(log_weights.shape, log_weights.dims) if dim != "sample"]
+    if hasattr(log_weights, "__sample__"):
+        n_samples = len(log_weights.__sample__)
+        shape = [
+            size for size, dim in zip(log_weights.shape, log_weights.dims) if dim != "__sample__"
+        ]
     else:
         n_samples = log_weights.shape[-1]
         shape = log_weights.shape[:-1]
@@ -766,7 +811,7 @@ def psislw(log_weights, reff=1.0):
     # define kwargs
     func_kwargs = {"cutoff_ind": cutoff_ind, "cutoffmin": cutoffmin, "k_min": k_min, "out": out}
     ufunc_kwargs = {"n_dims": 1, "n_output": 2, "ravel": False, "check_shape": False}
-    kwargs = {"input_core_dims": [["sample"]], "output_core_dims": [["sample"], []]}
+    kwargs = {"input_core_dims": [["__sample__"]], "output_core_dims": [["__sample__"], []]}
     log_weights, pareto_shape = _wrap_xarray_ufunc(
         _psislw,
         log_weights,
@@ -775,7 +820,7 @@ def psislw(log_weights, reff=1.0):
         **kwargs,
     )
     if isinstance(log_weights, xr.DataArray):
-        log_weights = log_weights.rename("log_weights").rename(sample="sample")
+        log_weights = log_weights.rename("log_weights")
     if isinstance(pareto_shape, xr.DataArray):
         pareto_shape = pareto_shape.rename("pareto_shape")
     return log_weights, pareto_shape
@@ -1278,7 +1323,9 @@ def summary(
     n_vars = np.sum([joined[var].size // n_metrics for var in joined.data_vars])
 
     if fmt.lower() == "wide":
-        summary_df = pd.DataFrame(np.full((n_vars, n_metrics), np.nan), columns=metric_names)
+        summary_df = pd.DataFrame(
+            (np.full((cast(int, n_vars), n_metrics), np.nan)), columns=metric_names
+        )
         indexs = []
         for i, (var_name, sel, isel, values) in enumerate(
             xarray_var_iter(joined, skip_dims={"metric"})
@@ -1380,13 +1427,13 @@ def waic(data, pointwise=None, var_name=None, scale=None, dask_kwargs=None):
     else:
         raise TypeError('Valid scale values are "deviance", "log", "negative_log"')
 
-    log_likelihood = log_likelihood.stack(sample=("chain", "draw"))
+    log_likelihood = log_likelihood.stack(__sample__=("chain", "draw"))
     shape = log_likelihood.shape
     n_samples = shape[-1]
     n_data_points = np.product(shape[:-1])
 
     ufunc_kwargs = {"n_dims": 1, "ravel": False}
-    kwargs = {"input_core_dims": [["sample"]]}
+    kwargs = {"input_core_dims": [["__sample__"]]}
     lppd_i = _wrap_xarray_ufunc(
         _logsumexp,
         log_likelihood,
@@ -1396,7 +1443,7 @@ def waic(data, pointwise=None, var_name=None, scale=None, dask_kwargs=None):
         **kwargs,
     )
 
-    vars_lpd = log_likelihood.var(dim="sample")
+    vars_lpd = log_likelihood.var(dim="__sample__")
     warn_mg = False
     if np.any(vars_lpd > 0.4):
         warnings.warn(
@@ -1500,7 +1547,7 @@ def loo_pit(idata=None, *, y=None, y_hat=None, log_weights=None):
 
         In [1]: T = data.observed_data.obs - data.posterior.mu.median(dim=("chain", "draw"))
            ...: T_hat = data.posterior_predictive.obs - data.posterior.mu
-           ...: T_hat = T_hat.stack(sample=("chain", "draw"))
+           ...: T_hat = T_hat.stack(__sample__=("chain", "draw"))
            ...: az.loo_pit(idata=data, y=T**2, y_hat=T_hat**2)
 
     """
@@ -1526,7 +1573,7 @@ def loo_pit(idata=None, *, y=None, y_hat=None, log_weights=None):
         elif not isinstance(y, (np.ndarray, xr.DataArray)):
             raise ValueError(f"y must be of types array, DataArray or str, not {type(y)}")
         if isinstance(y_hat, str):
-            y_hat = idata.posterior_predictive[y_hat].stack(sample=("chain", "draw")).values
+            y_hat = idata.posterior_predictive[y_hat].stack(__sample__=("chain", "draw")).values
         elif not isinstance(y_hat, (np.ndarray, xr.DataArray)):
             raise ValueError(f"y_hat must be of types array, DataArray or str, not {type(y_hat)}")
         if log_weights is None:
@@ -1537,10 +1584,10 @@ def loo_pit(idata=None, *, y=None, y_hat=None, log_weights=None):
                     log_likelihood = _get_log_likelihood(idata)
             else:
                 log_likelihood = _get_log_likelihood(idata)
-            log_likelihood = log_likelihood.stack(sample=("chain", "draw"))
+            log_likelihood = log_likelihood.stack(__sample__=("chain", "draw"))
             posterior = convert_to_dataset(idata, group="posterior")
             n_chains = len(posterior.chain)
-            n_samples = len(log_likelihood.sample)
+            n_samples = len(log_likelihood.__sample__)
             ess_p = ess(posterior, method="mean")
             # this mean is over all data variables
             reff = (
@@ -1573,7 +1620,7 @@ def loo_pit(idata=None, *, y=None, y_hat=None, log_weights=None):
         )
 
     kwargs = {
-        "input_core_dims": [[], ["sample"], ["sample"]],
+        "input_core_dims": [[], ["__sample__"], ["__sample__"]],
         "output_core_dims": [[]],
         "join": "left",
     }
